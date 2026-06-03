@@ -14,7 +14,7 @@ use std::{
 #[cfg(feature = "autotune-checks")]
 use crate::CubeFusionHandle;
 #[cfg(feature = "autotune-checks")]
-use burn_backend::TensorData;
+use burn_backend::{TensorData, cubecl::dtype_to_storage_type};
 #[cfg(feature = "autotune-checks")]
 use std::collections::HashMap;
 
@@ -105,7 +105,7 @@ impl<R: Runtime> cubecl::tune::AutotuneOutput for TuneOutput<R> {
                         into_contiguous::<R>(
                             &handle.client,
                             handle.clone().binding(shape.clone()),
-                            handle.dtype.into(),
+                            dtype_to_storage_type(handle.dtype),
                         )
                         .handle
                     } else {
@@ -115,7 +115,7 @@ impl<R: Runtime> cubecl::tune::AutotuneOutput for TuneOutput<R> {
                         into_contiguous::<R>(
                             &other.client,
                             other.clone().binding(shape.clone()),
-                            other.dtype.into(),
+                            dtype_to_storage_type(other.dtype),
                         )
                         .handle
                     } else {
