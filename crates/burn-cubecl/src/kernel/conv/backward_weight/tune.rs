@@ -59,18 +59,6 @@ pub fn wgrad_autotune<R: CubeRuntime, const N: usize>(
                     wgrad_gemm_simple_async(input, grad, shape, options, AcceleratedTileKind::Mma)
                 },
             ))
-            .with(Tunable::new(
-                "simple_tma_cmma",
-                |(input, grad, shape, options)| {
-                    wgrad_gemm_simple_tma(input, grad, shape, options, AcceleratedTileKind::Cmma)
-                },
-            ))
-            .with(Tunable::new(
-                "simple_tma_mma",
-                |(input, grad, shape, options)| {
-                    wgrad_gemm_simple_tma(input, grad, shape, options, AcceleratedTileKind::Mma)
-                },
-            ))
     });
 
     TUNER.execute(

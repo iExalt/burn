@@ -58,25 +58,6 @@ pub(crate) fn wgrad_gemm_simple_async<R: CubeRuntime, const N: usize>(
     )
 }
 
-pub(crate) fn wgrad_gemm_simple_tma<R: CubeRuntime, const N: usize>(
-    input: CubeTensor<R>,
-    out_grad: CubeTensor<R>,
-    weight_shape: Shape,
-    options: ConvOptions<N>,
-    tile_kind: AcceleratedTileKind,
-) -> Result<CubeTensor<R>, ConvSetupError> {
-    launch_backwards_weight::<R, N>(
-        &Strategy::Inferred {
-            algorithm: ConvAlgorithm::SimpleAsyncTma,
-            tile_kind,
-        },
-        input,
-        out_grad,
-        weight_shape,
-        options,
-    )
-}
-
 /// Perform a convolution backwards weight pass using the implicit GEMM (im2col) algorithm, using
 /// cubecl tiling matmul components.
 ///
