@@ -59,18 +59,6 @@ pub fn conv_autotune<R: CubeRuntime, const N: usize>(
                     conv_gemm_simple_async(input, weight, bias, options, AcceleratedTileKind::Mma)
                 },
             ))
-            .with(Tunable::new(
-                "simple_tma_cmma",
-                |(input, weight, bias, options)| {
-                    conv_gemm_simple_tma(input, weight, bias, options, AcceleratedTileKind::Cmma)
-                },
-            ))
-            .with(Tunable::new(
-                "simple_tma_mma",
-                |(input, weight, bias, options)| {
-                    conv_gemm_simple_tma(input, weight, bias, options, AcceleratedTileKind::Mma)
-                },
-            ))
     });
 
     TUNER.execute(

@@ -64,32 +64,6 @@ pub fn conv_gemm_simple_async<R: CubeRuntime, const N: usize>(
 }
 
 /// Perform a 2D convolution using the implicit GEMM (im2col) algorithm, using cubecl tiling matmul
-/// components. Uses [`CmmaLargeMAlgorithm`] for the stage size
-///
-/// * `input` - The input feature map
-/// * `weight` - The weights (filter) applied to each kernel
-/// * `bias` - The bias added to each channel
-/// * `options` - The options to use for the convolution
-pub fn conv_gemm_simple_tma<R: CubeRuntime, const N: usize>(
-    input: CubeTensor<R>,
-    weight: CubeTensor<R>,
-    bias: Option<CubeTensor<R>>,
-    options: ConvOptions<N>,
-    tile_kind: AcceleratedTileKind,
-) -> Result<CubeTensor<R>, ConvSetupError> {
-    launch_convolution_forward::<R, N>(
-        &Strategy::Inferred {
-            algorithm: ConvAlgorithm::SimpleAsyncTma,
-            tile_kind,
-        },
-        input,
-        weight,
-        bias,
-        options,
-    )
-}
-
-/// Perform a 2D convolution using the implicit GEMM (im2col) algorithm, using cubecl tiling matmul
 /// components, using the specified algorithm.
 ///
 /// * `input` - The input feature map
