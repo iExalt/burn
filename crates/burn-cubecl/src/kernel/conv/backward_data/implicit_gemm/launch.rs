@@ -35,29 +35,6 @@ pub fn dgrad_gemm_simple_sync<R: CubeRuntime, const N: usize>(
     )
 }
 
-pub fn dgrad_gemm_simple_async<R: CubeRuntime, const N: usize>(
-    out_grad: CubeTensor<R>,
-    weights: CubeTensor<R>,
-    input_shape: Shape,
-    options: ConvOptions<N>,
-    tile_kind: AcceleratedTileKind,
-) -> Result<CubeTensor<R>, ConvSetupError> {
-    let algorithm = match tile_kind {
-        AcceleratedTileKind::Cmma => ConvAlgorithm::SimpleAsyncCyclic,
-        AcceleratedTileKind::Mma => ConvAlgorithm::SimpleAsyncStrided,
-    };
-    launch_backwards_data::<R, N>(
-        &Strategy::Inferred {
-            algorithm,
-            tile_kind,
-        },
-        out_grad,
-        weights,
-        input_shape,
-        options,
-    )
-}
-
 /// Perform a convolution backwards data pass using the implicit GEMM (im2col) algorithm, using
 /// cubecl tiling matmul components.
 ///

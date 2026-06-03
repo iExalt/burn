@@ -1,19 +1,14 @@
+use crate::{
+    CubeAutotuneKey, CubeRuntime, CubeTuneId,
+    kernel::conv::{ConvAutotuneKey, backward_data::fallback::conv_data_backward_fallback},
+    tensor::CubeTensor,
+};
 use burn_backend::cubecl::dtype_to_storage_type;
 use burn_backend::ops::ConvOptions;
 use burn_std::Shape;
 use cubecl::{
     ir::StorageType,
     tune::{LocalTuner, Tunable, TunableSet, anchor, local_tuner},
-};
-use cubek::convolution::AcceleratedTileKind;
-
-use crate::{
-    CubeAutotuneKey, CubeRuntime, CubeTuneId,
-    kernel::conv::{
-        ConvAutotuneKey,
-        backward_data::{fallback::conv_data_backward_fallback, implicit_gemm::*},
-    },
-    tensor::CubeTensor,
 };
 
 /// Executes autotune on conv2d operations
@@ -28,37 +23,12 @@ pub fn dgrad_autotune<R: CubeRuntime, const N: usize>(
     static TUNER: LocalTuner<CubeAutotuneKey, CubeTuneId> = local_tuner!();
 
     let tunables = TUNER.init(|| {
-        TunableSet::new(create_key::<R, N>, create_wgrad_input::<R, N>)
-            .with(Tunable::new(
-                "wgrad_fallback",
-                |(out_grad, weights, input_shape, options)| {
-                    conv_data_backward_fallback::<R, N>(out_grad, weights, input_shape, options)
-                },
-            ))
-            .with(Tunable::new(
-                "simple_sync_cmma",
-                |(input, grad, shape, options)| {
-                    dgrad_gemm_simple_sync(input, grad, shape, options, AcceleratedTileKind::Cmma)
-                },
-            ))
-            .with(Tunable::new(
-                "simple_sync_mma",
-                |(input, grad, shape, options)| {
-                    dgrad_gemm_simple_sync(input, grad, shape, options, AcceleratedTileKind::Mma)
-                },
-            ))
-            .with(Tunable::new(
-                "simple_async_cmma",
-                |(input, grad, shape, options)| {
-                    dgrad_gemm_simple_async(input, grad, shape, options, AcceleratedTileKind::Cmma)
-                },
-            ))
-            .with(Tunable::new(
-                "simple_async_mma",
-                |(input, grad, shape, options)| {
-                    dgrad_gemm_simple_async(input, grad, shape, options, AcceleratedTileKind::Mma)
-                },
-            ))
+        TunableSet::new(create_key::<R, N>, create_wgrad_input::<R, N>).with(Tunable::new(
+            "wgrad_fallback",
+            |(out_grad, weights, input_shape, options)| {
+                conv_data_backward_fallback::<R, N>(out_grad, weights, input_shape, options)
+            },
+        ))
     });
 
     TUNER.execute(

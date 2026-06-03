@@ -40,29 +40,6 @@ pub fn conv_gemm_simple_sync<R: CubeRuntime, const N: usize>(
     )
 }
 
-pub fn conv_gemm_simple_async<R: CubeRuntime, const N: usize>(
-    input: CubeTensor<R>,
-    weight: CubeTensor<R>,
-    bias: Option<CubeTensor<R>>,
-    options: ConvOptions<N>,
-    tile_kind: AcceleratedTileKind,
-) -> Result<CubeTensor<R>, ConvSetupError> {
-    let algorithm = match tile_kind {
-        AcceleratedTileKind::Cmma => ConvAlgorithm::SimpleAsyncCyclic,
-        AcceleratedTileKind::Mma => ConvAlgorithm::SimpleAsyncStrided,
-    };
-    launch_convolution_forward::<R, N>(
-        &Strategy::Inferred {
-            algorithm,
-            tile_kind,
-        },
-        input,
-        weight,
-        bias,
-        options,
-    )
-}
-
 /// Perform a 2D convolution using the implicit GEMM (im2col) algorithm, using cubecl tiling matmul
 /// components, using the specified algorithm.
 ///
