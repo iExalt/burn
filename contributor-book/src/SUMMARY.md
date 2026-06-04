@@ -14,3 +14,4 @@
   - [Submitting Examples to Burn](./guides/submitting-examples.md)
 - [Frequently Encountered Issues](./frequently-encountered-issues/README.md)
   - [Issues Related To Adding Operators](./frequently-encountered-issues/issues-while-adding-ops.md)
+  - [CUDA Kernel Correctness](./frequently-encountered-issues/cuda-kernel-correctness.md)

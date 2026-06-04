@@ -28,3 +28,6 @@ mod cuda {
 ## Dependencies
 
 Requires CUDA 12.x to be installed and on the `PATH`.
+
+See the contributor book's [CUDA kernel correctness issue ledger](../../contributor-book/src/frequently-encountered-issues/cuda-kernel-correctness.md)
+when validating CubeCL autotune candidates on new CUDA hardware.
