@@ -225,6 +225,38 @@ fn test_float_matmul_vecmat_transposed_fused() {
     expected.assert_approx_eq(&out.into_data(), Tolerance::<f32>::strict());
 }
 
+#[cfg(feature = "fusion")]
+#[test]
+fn test_float_matmul_terminalo3_fused_accelerated_selector() {
+    let device = Default::default();
+    let lhs = TestTensor::<2>::ones([256, 512], &device);
+    let rhs = TestTensor::<2>::ones([512, 256], &device);
+
+    device.sync().unwrap();
+    let output = lhs.matmul(rhs) + 1;
+    let expected = TensorData::new(vec![513.0f32; 256 * 256], [256, 256]);
+
+    output
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+}
+
+#[cfg(feature = "fusion")]
+#[test]
+fn test_float_matmul_terminalo3_fused_fallback_selector() {
+    let device = Default::default();
+    let lhs = TestTensor::<2>::ones([4096, 256], &device);
+    let rhs = TestTensor::<2>::ones([256, 1], &device);
+
+    device.sync().unwrap();
+    let output = lhs.matmul(rhs) + 1;
+    let expected = TensorData::new(vec![257.0f32; 4096], [4096, 1]);
+
+    output
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+}
+
 #[test]
 fn test_float_matmul_4_8() {
     let device = Default::default();
