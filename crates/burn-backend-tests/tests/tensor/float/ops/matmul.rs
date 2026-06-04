@@ -1,5 +1,6 @@
 use super::*;
 use burn_tensor::TensorData;
+use burn_tensor::activation::mish;
 use burn_tensor::{ElementConversion, Tolerance};
 
 #[test]
@@ -235,6 +236,59 @@ fn test_float_matmul_terminalo3_fused_accelerated_selector() {
     device.sync().unwrap();
     let output = lhs.matmul(rhs) + 1;
     let expected = TensorData::new(vec![513.0f32; 256 * 256], [256, 256]);
+
+    output
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+}
+
+#[cfg(feature = "fusion")]
+#[test]
+fn test_float_matmul_terminalo3_fused_specialized_large_m_selector() {
+    let device = Default::default();
+    let lhs = TestTensor::<2>::ones([2048, 256], &device);
+    let rhs = TestTensor::<2>::ones([256, 512], &device);
+
+    device.sync().unwrap();
+    let output = lhs.matmul(rhs) + 1;
+    let expected = TensorData::new(vec![257.0f32; 2048 * 512], [2048, 512]);
+
+    output
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+}
+
+#[cfg(feature = "fusion")]
+#[test]
+fn test_float_matmul_terminalo3_fused_specialized_large_m_tail() {
+    let device = Default::default();
+    let lhs = TestTensor::<2>::ones([2048, 256], &device);
+    let rhs = TestTensor::<2>::ones([256, 264], &device);
+    let bias = TestTensor::<1>::ones([264], &device);
+
+    device.sync().unwrap();
+    let output = lhs
+        .matmul(rhs)
+        .add(bias.unsqueeze::<2>())
+        .reshape([2048, 8, 33]);
+    let expected = TensorData::new(vec![257.0f32; 2048 * 264], [2048, 264]);
+
+    output
+        .reshape([2048, 264])
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+}
+
+#[cfg(feature = "fusion")]
+#[test]
+fn test_float_matmul_terminalo3_fused_specialized_large_m_mish() {
+    let device = Default::default();
+    let lhs = TestTensor::<2>::ones([2048, 256], &device);
+    let rhs = TestTensor::<2>::ones([256, 512], &device);
+
+    device.sync().unwrap();
+    let output = mish(lhs.matmul(rhs));
+    let expected = TensorData::new(vec![256.0f32; 2048 * 512], [2048, 512]);
 
     output
         .into_data()

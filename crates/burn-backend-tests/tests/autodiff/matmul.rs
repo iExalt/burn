@@ -1,5 +1,5 @@
 use super::*;
-use burn_tensor::TensorData;
+use burn_tensor::{TensorData, Tolerance};
 
 #[test]
 fn should_diff_matmul() {
@@ -80,4 +80,23 @@ fn test_matmul_complex_2() {
     grad_2
         .to_data()
         .assert_eq(&TensorData::from([[264., 264.0], [344.0, 344.0]]), false);
+}
+
+#[cfg(feature = "fusion")]
+#[test]
+fn test_matmul_terminalo3_branched_linear_x_backward() {
+    let device = AutodiffDevice::new();
+    let input = TestTensor::<2>::ones([2048, 512], &device).require_grad();
+    let state_weight = TestTensor::<2>::ones([512, 256], &device).require_grad();
+    let value_weight = TestTensor::<2>::ones([512, 1], &device).require_grad();
+
+    let state = input.clone().matmul(state_weight).sum();
+    let value = input.clone().matmul(value_weight).sum();
+    let grads = state.add(value).backward();
+    let input_grad = input.grad(&grads).unwrap();
+    let expected = TensorData::new(vec![257.0f32; 2048 * 512], [2048, 512]);
+
+    input_grad
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
 }
