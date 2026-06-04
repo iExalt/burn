@@ -7,7 +7,7 @@ use crate::{
 use crate::{kernel::utils::decompose_linear, ops::numeric::empty_device_dtype};
 use burn_backend::cubecl::dtype_to_storage_type;
 use burn_backend::{
-    TensorMetadata,
+    DType, TensorMetadata,
     ops::{ConvOptions, conv::calculate_conv_output_sizes},
 };
 use cubecl::{
@@ -32,7 +32,7 @@ struct Conv2dArgs {
 
 #[cube(launch_unchecked, address_type = "dynamic")]
 #[allow(clippy::redundant_closure)]
-fn direct_conv2d_kernel<E: Numeric, NIn: Size, NOut: Size>(
+fn direct_conv2d_kernel<E: Numeric, EA: Numeric, NIn: Size, NOut: Size>(
     input: &Tensor<Vector<E, NIn>>,
     weight: &Tensor<Vector<E, NIn>>,
     bias: ComptimeOption<&[Vector<E, NOut>]>,
@@ -41,7 +41,7 @@ fn direct_conv2d_kernel<E: Numeric, NIn: Size, NOut: Size>(
     shape_out: Sequence<FastDivmod<u32>>,
     shape_out_c: FastDivmod<u32>,
     #[comptime] has_padding: bool,
-    #[define(E)] _dtype: StorageType,
+    #[define(E, EA)] _dtypes: [StorageType; 2],
 ) {
     if !output.is_in_bounds(ABSOLUTE_POS) {
         terminate!();
@@ -60,8 +60,8 @@ fn direct_conv2d_kernel<E: Numeric, NIn: Size, NOut: Size>(
     let g = out_c / args.channels_per_group;
     let ic_start = in_c_per_group * g;
 
-    let bias: ComptimeOption<Vector<E, NOut>> =
-        bias.map(|bias| bias[out_c as usize / vector_size_out]);
+    let bias: ComptimeOption<Vector<EA, NOut>> =
+        bias.map(|bias| Vector::cast_from(bias[out_c as usize / vector_size_out]));
     let mut sum = bias.unwrap_or_else(|| Vector::zero());
 
     let in_offs = b as usize * input.stride(0) + ic_start as usize;
@@ -106,7 +106,7 @@ fn direct_conv2d_kernel<E: Numeric, NIn: Size, NOut: Size>(
         has_padding,
     );
 
-    output.write(ABSOLUTE_POS, sum);
+    output.write(ABSOLUTE_POS, Vector::cast_from(sum));
 }
 
 #[derive(CubeType, Clone)]
@@ -123,10 +123,10 @@ struct LoopParams {
 }
 
 #[cube]
-fn kernel_loop<E: Numeric, NIn: Size, NOut: Size>(
+fn kernel_loop<E: Numeric, EA: Numeric, NIn: Size, NOut: Size>(
     input: &Tensor<Vector<E, NIn>>,
     weight: &Tensor<Vector<E, NIn>>,
-    sum: &mut Vector<E, NOut>,
+    sum: &mut Vector<EA, NOut>,
     in_offs: usize,
     in_bounds: bool,
     weight_offs: usize,
@@ -178,10 +178,10 @@ fn kernel_loop<E: Numeric, NIn: Size, NOut: Size>(
 }
 
 #[cube]
-fn kernel_loop_inner<E: Numeric, NIn: Size, NOut: Size>(
+fn kernel_loop_inner<E: Numeric, EA: Numeric, NIn: Size, NOut: Size>(
     input: &Tensor<Vector<E, NIn>>,
     weight: &Tensor<Vector<E, NIn>>,
-    sum: &mut Vector<E, NOut>,
+    sum: &mut Vector<EA, NOut>,
     in_offs: usize,
     in_bounds: bool,
     weight_offs: usize,
@@ -196,11 +196,12 @@ fn kernel_loop_inner<E: Numeric, NIn: Size, NOut: Size>(
             let in_pos = in_offs + in_c as usize;
             let mut weight_pos = weight_offs + in_c as usize;
 
-            let val = input[in_pos / vector_size_in];
+            let val: Vector<EA, NIn> = Vector::cast_from(input[in_pos / vector_size_in]);
 
             #[unroll]
             for v in 0..vector_size_out {
-                let weight = weight[weight_pos / vector_size_in];
+                let weight: Vector<EA, NIn> =
+                    Vector::cast_from(weight[weight_pos / vector_size_in]);
                 let val = val * weight;
 
                 #[unroll]
@@ -210,6 +211,13 @@ fn kernel_loop_inner<E: Numeric, NIn: Size, NOut: Size>(
                 weight_pos += stride_oc;
             }
         }
+    }
+}
+
+fn direct_accumulator_dtype(dtype: DType) -> DType {
+    match dtype {
+        DType::F16 | DType::BF16 => DType::F32,
+        _ => dtype,
     }
 }
 
@@ -313,9 +321,53 @@ pub fn conv_direct<R: CubeRuntime, const N: usize>(
             shape_out,
             shape_out_c,
             options.padding.iter().any(|it| *it != 0),
-            dtype_to_storage_type(out_dtype),
+            [
+                dtype_to_storage_type(out_dtype),
+                dtype_to_storage_type(direct_accumulator_dtype(out_dtype)),
+            ],
         )
     };
 
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::direct_accumulator_dtype;
+    use burn_backend::DType;
+
+    #[test]
+    #[allow(clippy::useless_vec)]
+    fn test_direct_accumulator_dtype() {
+        struct TestCase {
+            input: DType,
+        }
+
+        struct ExpectedTestResult {
+            output: DType,
+        }
+
+        let test_cases = vec![
+            TestCase { input: DType::F16 },
+            TestCase { input: DType::BF16 },
+            TestCase { input: DType::F32 },
+            TestCase { input: DType::F64 },
+            TestCase { input: DType::I32 },
+        ];
+
+        let expected_results = vec![
+            ExpectedTestResult { output: DType::F32 },
+            ExpectedTestResult { output: DType::F32 },
+            ExpectedTestResult { output: DType::F32 },
+            ExpectedTestResult { output: DType::F64 },
+            ExpectedTestResult { output: DType::I32 },
+        ];
+
+        for (index, (test_case, expected)) in
+            test_cases.iter().zip(expected_results.iter()).enumerate()
+        {
+            let output = direct_accumulator_dtype(test_case.input);
+            assert_eq!(expected.output, output, "Test case {index} failed");
+        }
+    }
 }
