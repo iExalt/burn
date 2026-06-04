@@ -17,7 +17,7 @@ machine. CUDA reports the device name generically:
 | Driver | `595.71.05` |
 | Burn fork | `9a3ba5b95c6a769c8134c18a9c0c4a808c3d274b` |
 | CubeCL fork | `ac3f7686dc1777432a176a5fc71c3740cf812ddf` |
-| Cubek fork | `ab040c7c2e54372217f1bdd1030db5afd59414b1` |
+| Cubek fork | `b1d7aeeea870b4951dd6604512c434e13f2c15c6` |
 
 Every matrix entry uses this runtime snapshot and dependency SHA set unless a
 later update records an override.
@@ -37,7 +37,7 @@ passes and the corrected candidate is available to autotune again.
 | needs direct parity | Cubek reduction | kernel reductions | forward | fp16 | Trainer isolation required deterministic `sum` and `reduce_dim` registrations. Direct parity must classify one-shot sum, chained sum, dimension reduction, vectorized output, and unit, plane, and cube routines. | `TerminalO3/runs/benchmarks/20260604T012835Z-phase6-autotune-reduction-contained-isolate-fused-matmul-fp16-games256/fused-matmul-fallback.yaml` | Cubek reduction parity matrix using TerminalO3-observed shapes | pending |
 | needs direct parity | Burn CubeCL Fusion and Cubek matmul | fused matmul | forward | fp16 | Trainer isolation required deterministic fused-matmul selection. Selector and owned matmul candidates need direct classification. | `TerminalO3/runs/benchmarks/20260604T012835Z-phase6-autotune-reduction-contained-isolate-fused-matmul-fp16-games256/fused-matmul-fallback.yaml` | Burn fused-matmul selector regressions and Cubek matmul parity | pending |
 | needs direct parity | Burn CubeCL and Cubek matmul | base matmul | forward | fp16 | Trainer isolation required deterministic base-matmul `Strategy::Auto`. Cyclic CMMA, MMA, TMA, and output-buffer reuse need direct parity. | `TerminalO3/runs/benchmarks/20260604T014355Z-phase6-autotune-contained-fp16-games256/default-cold.yaml` | Cubek matmul parity matrix using TerminalO3-observed shapes | pending |
-| confirmed failure | Burn Fusion | fallback operation ordering | forward fallback | fp16 | Forcing the advertised fused-matmul fallback panics the DSU worker with `Ordering is bigger than operations`, followed by `CallError`. | `TerminalO3/runs/benchmarks/20260604T012835Z-phase6-autotune-reduction-contained-isolate-fused-matmul-fp16-games256/fused-matmul-fallback.yaml` | Burn Fusion regression that forces the fused-matmul fallback workload | pending |
+| fixed | Cubek matmul | naive fallback launch geometry | forward fallback | fp16 | Forcing the advertised base-matmul `matmul_naive` fallback first failed because its `(106624, 4, 1)` launch grid exceeded the CUDA cube-count limit. Missing handles, `Ordering is bigger than operations`, and `CallError` followed after the device worker failed. The repair spreads oversized grids and maps spread cube coordinates back to naive output elements. | `TerminalO3/runs/benchmarks/20260604T014355Z-phase6-autotune-contained-fp16-games256/isolate-base-matmul-fallback.stderr` | Cubek `test_terminalo3_naive_large_m_axis_parity` | Cubek `b1d7aeee` |
 
 ## Validation Contract
 
