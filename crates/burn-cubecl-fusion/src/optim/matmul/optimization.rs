@@ -92,7 +92,6 @@ impl<R: Runtime> MatmulOptimizationInfo<R> {
 }
 
 impl<R: Runtime> MatmulOptimizationTuneArg<R> {
-    #[allow(dead_code)]
     pub(crate) fn execute_fused(
         &self,
         context: &mut Context<CubeFusionHandle<R>>,

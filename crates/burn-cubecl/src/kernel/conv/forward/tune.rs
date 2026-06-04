@@ -1,13 +1,15 @@
-use crate::{
-    CubeAutotuneKey, CubeRuntime, CubeTuneId,
-    kernel::conv::{ConvAutotuneKey, conv_direct, conv_im2col_1x1},
-    tensor::CubeTensor,
-};
 use burn_backend::cubecl::dtype_to_storage_type;
 use burn_backend::ops::ConvOptions;
 use cubecl::{
     ir::StorageType,
     tune::{LocalTuner, Tunable, TunableSet, anchor, local_tuner},
+};
+use cubek::convolution::AcceleratedTileKind;
+
+use crate::{
+    CubeAutotuneKey, CubeRuntime, CubeTuneId,
+    kernel::conv::{ConvAutotuneKey, conv_direct, conv_im2col_1x1, forward::implicit_gemm::*},
+    tensor::CubeTensor,
 };
 
 /// Executes autotune on convolution operations
@@ -31,6 +33,42 @@ pub fn conv_autotune<R: CubeRuntime, const N: usize>(
                 "conv_im2col_1x1",
                 |(input, weight, bias, options)| {
                     conv_im2col_1x1::<R, N>(input, weight, bias, options)
+                },
+            ))
+            .with(Tunable::new(
+                "simple_sync_cmma",
+                |(input, weight, bias, options)| {
+                    conv_gemm_simple_sync(input, weight, bias, options, AcceleratedTileKind::Cmma)
+                },
+            ))
+            .with(Tunable::new(
+                "simple_sync_mma",
+                |(input, weight, bias, options)| {
+                    conv_gemm_simple_sync(input, weight, bias, options, AcceleratedTileKind::Mma)
+                },
+            ))
+            .with(Tunable::new(
+                "simple_async_cmma",
+                |(input, weight, bias, options)| {
+                    conv_gemm_simple_async(input, weight, bias, options, AcceleratedTileKind::Cmma)
+                },
+            ))
+            .with(Tunable::new(
+                "simple_async_mma",
+                |(input, weight, bias, options)| {
+                    conv_gemm_simple_async(input, weight, bias, options, AcceleratedTileKind::Mma)
+                },
+            ))
+            .with(Tunable::new(
+                "simple_tma_cmma",
+                |(input, weight, bias, options)| {
+                    conv_gemm_simple_tma(input, weight, bias, options, AcceleratedTileKind::Cmma)
+                },
+            ))
+            .with(Tunable::new(
+                "simple_tma_mma",
+                |(input, weight, bias, options)| {
+                    conv_gemm_simple_tma(input, weight, bias, options, AcceleratedTileKind::Mma)
                 },
             ))
     });

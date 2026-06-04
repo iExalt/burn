@@ -2,15 +2,20 @@ use super::optimization::MatmulOptimizationTuneArg;
 use crate::{
     CubeFusionHandle,
     engine::trace::TuneOutput,
+    optim::matmul::{AcceleratedTileKind, FusedMatmulSelector},
     tune::{FusionInputGen, TuneInput},
 };
 use burn_backend::cubecl::dtype_to_storage_type;
 use burn_fusion::stream::Context;
 use cubecl::{
     AutotuneKey, CubeTuneId, Runtime,
-    tune::{LocalTuner, Tunable, TunableSet, local_tuner},
+    std::tensor::MatrixBatchLayout,
+    tune::{LocalTuner, Tunable, TunableSet, TuneGroup, local_tuner},
 };
-use cubek::matmul::strategy::MatmulAutotuneKey;
+use cubek::matmul::{
+    definition::MatmulKind,
+    strategy::{MatmulAutotuneKey, MatmulGlobalScale, should_tune_double_buffering},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Serialize, Deserialize, AutotuneKey)]
@@ -30,8 +35,203 @@ pub fn fused_matmul_autotune<R: Runtime>(
     static TUNER: LocalTuner<FusedMatmulAutotuneKey, CubeTuneId> = local_tuner!();
 
     let tunables = TUNER.init(|| {
-        TunableSet::new(create_key::<R>, FusionInputGen)
-            .with(Tunable::new("fused_matmul_fallback", tune_fallback::<R>))
+        const PRIORITY_MAX: i8 = 3;
+        const PRIORITY_HIGH: i8 = 2;
+        const PRIORITY_MEDIUM: i8 = 1;
+        const PRIORITY_MIN: i8 = 0;
+        const PRIORITY_NEVER: i8 = -1;
+
+        let accelerated = TuneGroup::<FusedMatmulAutotuneKey>::new("accelerated", |key| {
+            if matches!(key.matmul_key.analysis.kind, MatmulKind::General) {
+                match key.matmul_key.analysis.scale_global {
+                    MatmulGlobalScale::Large => PRIORITY_MAX,
+                    _ => PRIORITY_HIGH,
+                }
+            } else if matches!(
+                key.matmul_key.analysis.kind,
+                MatmulKind::MatVec | MatmulKind::VecMat
+            ) {
+                PRIORITY_MAX
+            } else {
+                PRIORITY_MEDIUM
+            }
+        });
+
+        let unit = TuneGroup::<FusedMatmulAutotuneKey>::new("unit", |key| {
+            if !matches!(key.matmul_key.analysis.kind, MatmulKind::General)
+                || matches!(
+                    key.matmul_key.analysis.scale_global,
+                    MatmulGlobalScale::Small
+                )
+            {
+                PRIORITY_HIGH
+            } else {
+                PRIORITY_MEDIUM
+            }
+        });
+
+        let gemv = TuneGroup::<FusedMatmulAutotuneKey>::new("gemv", |key| {
+            if matches!(key.matmul_key.analysis.kind, MatmulKind::MatVec) {
+                // LHS is the matrix.
+                match key.matmul_key.definition.matrix_layout_lhs {
+                    MatrixBatchLayout::Contiguous => PRIORITY_MAX,
+                    MatrixBatchLayout::MildlyPermuted { transposed, .. } => {
+                        if transposed {
+                            PRIORITY_HIGH
+                        } else {
+                            PRIORITY_MAX
+                        }
+                    }
+                    MatrixBatchLayout::HighlyPermuted => PRIORITY_MAX,
+                }
+            } else if matches!(key.matmul_key.analysis.kind, MatmulKind::VecMat) {
+                // RHS is the matrix.
+                match key.matmul_key.definition.matrix_layout_rhs {
+                    MatrixBatchLayout::Contiguous => PRIORITY_HIGH,
+                    MatrixBatchLayout::MildlyPermuted { transposed, .. } => {
+                        if transposed {
+                            PRIORITY_MAX
+                        } else {
+                            PRIORITY_HIGH
+                        }
+                    }
+                    MatrixBatchLayout::HighlyPermuted => PRIORITY_HIGH,
+                }
+            } else {
+                PRIORITY_NEVER
+            }
+        });
+
+        let odd = TuneGroup::<FusedMatmulAutotuneKey>::new("odd", |key| {
+            if key.matmul_key.definition.lhs_pow2_factor == 0
+                || key.matmul_key.definition.rhs_pow2_factor == 0
+            {
+                PRIORITY_MAX
+            } else {
+                PRIORITY_MIN
+            }
+        });
+
+        fn double_buffering_priority(key: &FusedMatmulAutotuneKey, max: i8, min: i8) -> i8 {
+            if should_tune_double_buffering(key.num_out_buffers > 1, &key.matmul_key) {
+                max
+            } else {
+                min
+            }
+        }
+
+        // First entry should always work, since it is considered the fallback.
+        let mut set = TunableSet::new(create_key::<R>, FusionInputGen).with(
+            Tunable::new("fused_matmul_fallback", tune_fallback::<R>).group(&unit, |key| {
+                if matches!(key.matmul_key.analysis.kind, MatmulKind::InnerProduct) {
+                    PRIORITY_MAX
+                } else if matches!(
+                    key.matmul_key.analysis.scale_global,
+                    MatmulGlobalScale::Small
+                ) {
+                    PRIORITY_HIGH
+                } else {
+                    PRIORITY_MIN
+                }
+            }),
+        );
+
+        // Vector-matrix kernels.
+        for (selector, double_buf) in [
+            (FusedMatmulSelector::SimpleVecMat, false),
+            (FusedMatmulSelector::DoubleVecMat, true),
+            (FusedMatmulSelector::GemmNoStage, false),
+            (FusedMatmulSelector::GemvUnitPerpendicular, false),
+        ] {
+            set = set.with(
+                Tunable::new(&selector.name(), move |input| {
+                    tune_fused::<R>(input, selector)
+                })
+                .group(&gemv, move |key| match double_buf {
+                    false => PRIORITY_MAX,
+                    true => double_buffering_priority(key, PRIORITY_MAX, PRIORITY_HIGH),
+                }),
+            );
+        }
+
+        // Unit matmuls
+        for (selector, double_buf) in [
+            (FusedMatmulSelector::SimpleUnit, false),
+            (FusedMatmulSelector::DoubleUnit, true),
+        ] {
+            set = set.with(
+                Tunable::new(&selector.name(), move |input| {
+                    tune_fused::<R>(input, selector)
+                })
+                .group(&unit, move |key| match double_buf {
+                    false => PRIORITY_MAX,
+                    true => double_buffering_priority(key, PRIORITY_MAX, PRIORITY_HIGH),
+                }),
+            );
+        }
+
+        // Accelerated matmuls
+        for tile_matmul in [AcceleratedTileKind::Cmma, AcceleratedTileKind::Mma] {
+            for (selector, double_buf, extra_group) in [
+                (
+                    FusedMatmulSelector::Simple {
+                        multi_rows: false,
+                        tile_matmul,
+                    },
+                    false,
+                    None,
+                ),
+                (
+                    FusedMatmulSelector::Simple {
+                        multi_rows: true,
+                        tile_matmul,
+                    },
+                    false,
+                    None,
+                ),
+                (
+                    FusedMatmulSelector::OrderedDoubleBuffering { tile_matmul },
+                    true,
+                    None,
+                ),
+                (
+                    FusedMatmulSelector::DoubleBuffering {
+                        specialized: false,
+                        tile_matmul,
+                    },
+                    true,
+                    None,
+                ),
+                (
+                    FusedMatmulSelector::DoubleBuffering {
+                        specialized: true,
+                        tile_matmul,
+                    },
+                    true,
+                    Some(&odd),
+                ),
+            ] {
+                let priority_within_group =
+                    |key: &FusedMatmulAutotuneKey, double_buf: bool| match double_buf {
+                        false => PRIORITY_MAX,
+                        true => double_buffering_priority(key, PRIORITY_MAX, PRIORITY_HIGH),
+                    };
+                let mut tunable = Tunable::new(&selector.name(), move |input| {
+                    tune_fused::<R>(input, selector)
+                })
+                .group(&accelerated, move |key| {
+                    priority_within_group(key, double_buf)
+                });
+
+                if let Some(group) = extra_group {
+                    tunable =
+                        tunable.group(group, move |key| priority_within_group(key, double_buf));
+                }
+                set = set.with(tunable);
+            }
+        }
+
+        set
     });
 
     TUNER.execute(
@@ -78,6 +278,18 @@ pub(crate) fn create_key<R: Runtime>(
         opt.info.matmul.rhs.scheme(),
     );
     FusedMatmulAutotuneKey::new(key, opt.info.num_output_buffers(), opt.info.num_ops_fused())
+}
+
+fn tune_fused<R: Runtime>(
+    input: TuneInput<R, MatmulOptimizationTuneArg<R>>,
+    selector: FusedMatmulSelector,
+) -> Result<TuneOutput<R>, String> {
+    let is_original = input.is_original();
+    input.execute(|ctx, opt| match opt.execute_fused(ctx, selector) {
+        Ok(out) => Ok(out),
+        Err(_) if is_original => Ok(opt.execute_fallback(ctx)),
+        Err(e) => Err(format!("{e:?}")),
+    })
 }
 
 fn tune_fallback<R: Runtime>(
