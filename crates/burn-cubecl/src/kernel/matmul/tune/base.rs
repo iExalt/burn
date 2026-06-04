@@ -80,35 +80,6 @@ pub fn matmul_autotune<R: CubeRuntime>(
             }
         });
 
-        let tma = TuneGroup::<MatmulAutotuneKey>::new("tma", |key| {
-            // For large matmul, we set the max priority to TMA kernels, higher than any other
-            // matmuls, since they are the best kernels no matter what.
-            //
-            // But only when all axis are large.
-            let max_axis = usize::max(key.definition.m, key.definition.n);
-            let max_axis = usize::max(key.definition.k, max_axis);
-
-            let min_axis = usize::min(key.definition.m, key.definition.n);
-            let min_axis = usize::min(key.definition.k, min_axis);
-
-            let skewed_factor = max_axis / min_axis;
-
-            let priority_max = if matches!(key.analysis.kind, MatmulKind::General)
-                && matches!(key.analysis.scale_global, MatmulGlobalScale::Large)
-                && skewed_factor < 4
-            {
-                PRIORITY_MAX
-            } else {
-                PRIORITY_HIGH
-            };
-
-            if key.definition.lhs_stride_factor >= 4 && key.definition.rhs_stride_factor >= 4 {
-                priority_max
-            } else {
-                PRIORITY_NEVER
-            }
-        });
-
         let gemv = TuneGroup::<MatmulAutotuneKey>::new("gemv", move |key| {
             if num_cpu_cores.is_some() {
                 return PRIORITY_MAX;
@@ -388,54 +359,6 @@ pub fn matmul_autotune<R: CubeRuntime>(
                 Strategy::SpecializedCyclicMma(BlueprintStrategy::Inferred(().into())),
                 true,
                 None,
-                &accelerated,
-            ),
-            (
-                Strategy::SimpleTmaCmma(BlueprintStrategy::Inferred(SimpleArgs {
-                    multi_rows: false,
-                    tile_matmul: TileMatmulKind::Cmma,
-                })),
-                false,
-                Some(&tma),
-                &accelerated,
-            ),
-            (
-                Strategy::SimpleTmaMma(BlueprintStrategy::Inferred(SimpleArgs {
-                    multi_rows: false,
-                    tile_matmul: TileMatmulKind::Mma,
-                })),
-                false,
-                Some(&tma),
-                &accelerated,
-            ),
-            (
-                Strategy::SimpleTmaCmma(BlueprintStrategy::Inferred(SimpleArgs {
-                    multi_rows: true,
-                    tile_matmul: TileMatmulKind::Cmma,
-                })),
-                false,
-                Some(&tma),
-                &accelerated,
-            ),
-            (
-                Strategy::SimpleTmaMma(BlueprintStrategy::Inferred(SimpleArgs {
-                    multi_rows: true,
-                    tile_matmul: TileMatmulKind::Mma,
-                })),
-                false,
-                Some(&tma),
-                &accelerated,
-            ),
-            (
-                Strategy::SpecializedTmaCmma(BlueprintStrategy::Inferred(().into())),
-                true,
-                Some(&tma),
-                &accelerated,
-            ),
-            (
-                Strategy::SpecializedTmaMma(BlueprintStrategy::Inferred(().into())),
-                true,
-                Some(&tma),
                 &accelerated,
             ),
         ] {
