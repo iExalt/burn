@@ -15,9 +15,9 @@ machine. CUDA reports the device name generically:
 | Runtime GPU name | `NVIDIA Graphics Device` |
 | Compute capability | `10.0` |
 | Driver | `595.71.05` |
-| Burn fork | `41ab3d45d80a530e534b5b9ce30af59df13a165a` |
-| CubeCL fork | `ac3f7686dc1777432a176a5fc71c3740cf812ddf` |
-| Cubek fork | `e3f32b6369f592bc86fd6793384678c76d51de80` |
+| Burn fork | `9a3c5f3faa2f64a785732844c55bceea4bdcde5d` |
+| CubeCL fork | `74b88d02dc41f0202aa56675c8d6e4a97e722e71` |
+| Cubek fork | `f9ee447d38cdd55b33be93563599a4abc4fa82b0` |
 
 Every matrix entry uses this runtime snapshot and dependency SHA set unless a
 later update records an override.
