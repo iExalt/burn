@@ -30,12 +30,6 @@ pub fn wgrad_autotune<R: CubeRuntime, const N: usize>(
     let tunables = TUNER.init(|| {
         TunableSet::new(create_key::<R, N>, create_wgrad_input::<R, N>)
             .with(Tunable::new(
-                "wgrad_fallback",
-                |(input, grad, shape, options)| {
-                    conv_weight_backward_fallback::<R, N>(input, grad, shape, options)
-                },
-            ))
-            .with(Tunable::new(
                 "simple_sync_cmma",
                 |(input, grad, shape, options)| {
                     wgrad_gemm_simple_sync(input, grad, shape, options, AcceleratedTileKind::Cmma)
@@ -59,16 +53,10 @@ pub fn wgrad_autotune<R: CubeRuntime, const N: usize>(
                     wgrad_gemm_simple_async(input, grad, shape, options, AcceleratedTileKind::Mma)
                 },
             ))
-            .with(Tunable::new(
-                "simple_tma_cmma",
+            .with_reference(Tunable::new(
+                "wgrad_fallback",
                 |(input, grad, shape, options)| {
-                    wgrad_gemm_simple_tma(input, grad, shape, options, AcceleratedTileKind::Cmma)
-                },
-            ))
-            .with(Tunable::new(
-                "simple_tma_mma",
-                |(input, grad, shape, options)| {
-                    wgrad_gemm_simple_tma(input, grad, shape, options, AcceleratedTileKind::Mma)
+                    conv_weight_backward_fallback::<R, N>(input, grad, shape, options)
                 },
             ))
     });
