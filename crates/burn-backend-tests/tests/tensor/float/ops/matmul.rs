@@ -297,6 +297,61 @@ fn test_float_matmul_terminalo3_fused_specialized_large_m_mish() {
 
 #[cfg(feature = "fusion")]
 #[test]
+fn test_float_matmul_terminalo3_fused_specialized_medium_k_selector() {
+    let device = Default::default();
+    let lhs = TestTensor::<2>::ones([1024, 1568], &device);
+    let rhs = TestTensor::<2>::ones([1568, 512], &device);
+
+    device.sync().unwrap();
+    let output = lhs.matmul(rhs) + 1;
+    let expected = TensorData::new(vec![1569.0f32; 1024 * 512], [1024, 512]);
+
+    output
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+}
+
+#[cfg(feature = "fusion")]
+#[test]
+fn test_float_matmul_terminalo3_fused_specialized_medium_k_long_trace() {
+    let device = Default::default();
+    let lhs = TestTensor::<2>::ones([1024, 1568], &device);
+    let rhs = TestTensor::<2>::ones([1568, 512], &device);
+
+    device.sync().unwrap();
+    let mut output = lhs.matmul(rhs);
+    for _ in 0..15 {
+        output = output * 0.5;
+    }
+    let expected = TensorData::new(vec![0.0478515625f32; 1024 * 512], [1024, 512]);
+
+    output
+        .into_data()
+        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+}
+
+#[cfg(feature = "fusion")]
+#[test]
+fn test_float_matmul_terminalo3_fused_specialized_shared_mish_tail() {
+    let device = Default::default();
+
+    for m in [1862, 1885] {
+        let lhs = TestTensor::<2>::ones([m, 1568], &device);
+        let rhs = TestTensor::<2>::ones([1568, 512], &device);
+        let bias = TestTensor::<1>::ones([512], &device);
+
+        device.sync().unwrap();
+        let output = mish(lhs.matmul(rhs) + bias.unsqueeze::<2>());
+        let expected = TensorData::new(vec![1569.0f32; m * 512], [m, 512]);
+
+        output
+            .into_data()
+            .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
+    }
+}
+
+#[cfg(feature = "fusion")]
+#[test]
 fn test_float_matmul_terminalo3_fused_fallback_selector() {
     let device = Default::default();
     let lhs = TestTensor::<2>::ones([4096, 256], &device);

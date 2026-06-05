@@ -129,16 +129,25 @@ impl<'a, R: Runtime, O> TuneInput<'a, R, O> {
     #[cfg(feature = "autotune-checks")]
     fn for_check(&self) -> Self {
         let mut context = self.context().fork();
-        let handles = context
-            .handles
-            .handle_ids()
-            .filter_map(|id| {
-                context
-                    .handles
-                    .get_handle_ref(id)
-                    .map(|handle| (*id, clone_handle_for_check(handle)))
-            })
-            .collect::<Vec<_>>();
+        let ids = context.handles.handle_ids().copied().collect::<Vec<_>>();
+        let mut allocations: Vec<(cubecl::server::Handle, cubecl::server::Handle)> = Vec::new();
+        let mut handles = Vec::with_capacity(ids.len());
+
+        for id in ids {
+            let handle = context.handles.get_handle_ref(&id).unwrap();
+            let allocation = match allocations
+                .iter()
+                .find(|(source, _)| source.is_alias_of(&handle.handle))
+            {
+                Some((_, allocation)) => allocation.clone(),
+                None => {
+                    let allocation = clone_allocation_for_check(handle);
+                    allocations.push((handle.handle.clone(), allocation.clone()));
+                    allocation
+                }
+            };
+            handles.push((id, clone_handle_for_check(handle, allocation)));
+        }
 
         for (id, handle) in handles {
             context.handles.register_handle(id, handle);
@@ -198,7 +207,7 @@ impl<'a, R: Runtime, O> TuneInput<'a, R, O> {
 
 /// Clone a fusion handle onto independent storage while preserving views into its allocation.
 #[cfg(feature = "autotune-checks")]
-fn clone_handle_for_check<R: Runtime>(handle: &CubeFusionHandle<R>) -> CubeFusionHandle<R> {
+fn clone_allocation_for_check<R: Runtime>(handle: &CubeFusionHandle<R>) -> cubecl::server::Handle {
     use burn_std::{Shape, strides};
     use cubecl::ir::{ElemType, StorageType, UIntKind};
     use cubecl::prelude::TensorBinding;
@@ -214,12 +223,19 @@ fn clone_handle_for_check<R: Runtime>(handle: &CubeFusionHandle<R>) -> CubeFusio
         shape: Shape::new([size]),
         runtime: PhantomData,
     };
-    let mut copied = into_contiguous::<R>(
+    into_contiguous::<R>(
         &handle.client,
         input,
         StorageType::Scalar(ElemType::UInt(UIntKind::U8)),
     )
-    .handle;
+    .handle
+}
+
+#[cfg(feature = "autotune-checks")]
+fn clone_handle_for_check<R: Runtime>(
+    handle: &CubeFusionHandle<R>,
+    mut copied: cubecl::server::Handle,
+) -> CubeFusionHandle<R> {
     copied.offset_start = handle.handle.offset_start;
     copied.offset_end = handle.handle.offset_end;
 
@@ -317,6 +333,64 @@ mod tests {
                 .can_mut(),
             "cloning the check allocation should not affect the original allocation"
         );
+    }
+
+    #[test]
+    fn test_for_check_preserves_handle_aliases() {
+        let device = Default::default();
+        let client = TestRuntime::client(&device);
+        let base_id = TensorId::new(0);
+        let view_id = TensorId::new(1);
+        let base = client.create_from_slice(&[1, 2, 3, 4]);
+        let mut view = base.clone();
+        view.offset_start = Some(4);
+        view.offset_end = Some(4);
+        let mut context = Context {
+            tensors: HashMap::new(),
+            handles: HandleContainer::new(),
+            scalars: HashMap::new(),
+            shapes_relative2global: HashMap::new(),
+        };
+        context.handles.register_handle(
+            base_id,
+            CubeFusionHandle {
+                client: client.clone(),
+                handle: base,
+                device: device.clone(),
+                dtype: DType::F32,
+                strides: strides![1],
+                qparams: None,
+            },
+        );
+        context.handles.register_handle(
+            view_id,
+            CubeFusionHandle {
+                client,
+                handle: view,
+                device,
+                dtype: DType::F32,
+                strides: strides![2],
+                qparams: None,
+            },
+        );
+
+        let input = TuneInput::new(&mut context, ());
+        let check = input.for_check();
+        let original_base = input.handles().get_handle_ref(&base_id).unwrap();
+        let check_base = check.handles().get_handle_ref(&base_id).unwrap();
+        let check_view = check.handles().get_handle_ref(&view_id).unwrap();
+
+        assert!(
+            check_base.handle.is_alias_of(&check_view.handle),
+            "check fork should preserve aliases"
+        );
+        assert!(
+            !original_base.handle.is_alias_of(&check_base.handle),
+            "check fork should not retain the original allocation"
+        );
+        assert_eq!(check_view.handle.offset_start, Some(4));
+        assert_eq!(check_view.handle.offset_end, Some(4));
+        assert_eq!(check_view.strides, strides![2]);
     }
 }
 
