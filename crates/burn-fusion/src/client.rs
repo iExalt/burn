@@ -30,6 +30,11 @@ impl<R: FusionRuntime> DeviceService for FusionServer<R> {
     fn utilities(&self) -> burn_backend::ServerUtilitiesHandle {
         self.utilities.clone()
     }
+
+    fn shutdown(&mut self) {
+        FusionServer::shutdown(self);
+    }
+
     fn stage() -> DeviceServiceStage {
         DeviceServiceStage::Upstream
     }

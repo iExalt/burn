@@ -163,4 +163,10 @@ where
     {
         self.handles.get_bool_tensor::<B>(tensor)
     }
+
+    /// Drain accepted fusion work and release downstream runtime objects.
+    pub(crate) fn shutdown(&mut self) {
+        self.streams.shutdown(&mut self.handles);
+        core::mem::drop(core::mem::take(&mut self.handles));
+    }
 }

@@ -256,6 +256,299 @@ impl<R: FusionRuntime> MultiStream<R> {
         #[cfg(feature = "test-util")]
         crate::inspect::emit_handle_snapshot(id, handles.handle_ids().copied());
     }
+
+    /// Drain all streams and release every runtime-owned fusion object.
+    pub(crate) fn shutdown(&mut self, handles: &mut HandleContainer<R::FusionHandle>) {
+        let stream_ids = self.streams.keys().copied().collect::<Vec<_>>();
+        for stream_id in stream_ids {
+            self.drain(handles, stream_id);
+        }
+
+        self.streams.clear();
+        let optimizations = core::mem::replace(&mut self.optimizations, ExecutionPlanStore::new());
+        core::mem::drop(optimizations);
+        self.shared_sources.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MultiStream;
+    use crate::{
+        FuserProperties, FuserStatus, FusionRuntime, FusionServer, FusionUtilities, NumOperations,
+        OperationFuser, Optimization, UnfusedOp,
+        search::BlockOptimization,
+        stream::{Context, Operation, OrderedExecution, StreamId},
+    };
+    use burn_backend::{
+        BoolDType, Device, DeviceId, DeviceOps, DeviceSettings, FloatDType, IntDType,
+    };
+    use burn_ir::HandleContainer;
+    use burn_std::stub::RwLock;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use hashbrown::HashSet;
+    use std::sync::{Arc, OnceLock};
+
+    use crate::stream::{
+        execution::tests::{operation_1, operation_2},
+        store::{ExecutionPlan, ExecutionStrategy},
+    };
+
+    #[derive(Debug, Default)]
+    struct Counters {
+        executions: AtomicUsize,
+        fuser_drops: AtomicUsize,
+        handle_drops: AtomicUsize,
+        optimization_drops: AtomicUsize,
+    }
+
+    static COUNTERS: OnceLock<Arc<Counters>> = OnceLock::new();
+
+    fn counters() -> Arc<Counters> {
+        Arc::clone(COUNTERS.get_or_init(|| Arc::new(Counters::default())))
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq)]
+    struct TestDevice;
+
+    impl Device for TestDevice {
+        fn from_id(_device_id: DeviceId) -> Self {
+            Self
+        }
+
+        fn to_id(&self) -> DeviceId {
+            DeviceId {
+                type_id: 42,
+                index_id: 0,
+            }
+        }
+    }
+
+    impl DeviceOps for TestDevice {
+        fn defaults(&self) -> DeviceSettings {
+            DeviceSettings::with_dtypes(FloatDType::F32, IntDType::I32, BoolDType::Native)
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestRuntime;
+
+    impl FusionRuntime for TestRuntime {
+        type OptimizationState = usize;
+        type Optimization = TestOptimization;
+        type FusionHandle = TestHandle;
+        type FusionDevice = TestDevice;
+
+        fn fusers(_device: Self::FusionDevice) -> Vec<Box<dyn OperationFuser<Self::Optimization>>> {
+            vec![Box::new(TestFuser::new(counters()))]
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestHandle(Arc<Counters>);
+
+    impl Clone for TestHandle {
+        fn clone(&self) -> Self {
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    impl Drop for TestHandle {
+        fn drop(&mut self) {
+            self.0.handle_drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestOperation(Arc<Counters>);
+
+    impl Operation<TestRuntime> for TestOperation {
+        fn execute(&self, _handles: &mut HandleContainer<TestHandle>) {
+            self.0.executions.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestOptimization {
+        counters: Arc<Counters>,
+        len: usize,
+    }
+
+    impl Drop for TestOptimization {
+        fn drop(&mut self) {
+            self.counters
+                .optimization_drops
+                .fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl NumOperations for TestOptimization {
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        fn name(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    impl Optimization<TestRuntime> for TestOptimization {
+        fn execute(
+            &mut self,
+            _context: &mut Context<TestHandle>,
+            _execution: &OrderedExecution<TestRuntime>,
+        ) {
+            unreachable!("the sentinel optimization must remain cached")
+        }
+
+        fn to_state(&self) -> usize {
+            self.len
+        }
+
+        fn from_state(_device: &TestDevice, len: usize) -> Self {
+            Self {
+                counters: counters(),
+                len,
+            }
+        }
+    }
+
+    struct TestFuser {
+        counters: Arc<Counters>,
+        len: usize,
+    }
+
+    impl TestFuser {
+        fn new(counters: Arc<Counters>) -> Self {
+            Self { counters, len: 0 }
+        }
+    }
+
+    impl Clone for TestFuser {
+        fn clone(&self) -> Self {
+            Self {
+                counters: Arc::clone(&self.counters),
+                len: self.len,
+            }
+        }
+    }
+
+    impl Drop for TestFuser {
+        fn drop(&mut self) {
+            self.counters.fuser_drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl OperationFuser<TestOptimization> for TestFuser {
+        fn fuse(&mut self, _operation: &burn_ir::OperationIr) {
+            self.len += 1;
+        }
+
+        fn finish(&mut self) -> TestOptimization {
+            TestOptimization {
+                counters: Arc::clone(&self.counters),
+                len: self.len,
+            }
+        }
+
+        fn reset(&mut self) {
+            self.len = 0;
+        }
+
+        fn status(&self) -> FuserStatus {
+            FuserStatus::Open
+        }
+
+        fn properties(&self) -> FuserProperties {
+            FuserProperties::default()
+        }
+
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        fn clone_dyn(&self) -> Box<dyn OperationFuser<TestOptimization>> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn test_shutdown_drains_streams_and_releases_runtime_objects() {
+        let counters = counters();
+        counters.executions.store(0, Ordering::SeqCst);
+        counters.fuser_drops.store(0, Ordering::SeqCst);
+        counters.handle_drops.store(0, Ordering::SeqCst);
+        counters.optimization_drops.store(0, Ordering::SeqCst);
+
+        let mut streams = MultiStream::<TestRuntime>::new(TestDevice);
+        let mut handles = HandleContainer::new();
+        handles.register_handle(
+            burn_ir::TensorId::new(50),
+            TestHandle(Arc::clone(&counters)),
+        );
+        handles.register_handle(
+            burn_ir::TensorId::new(51),
+            TestHandle(Arc::clone(&counters)),
+        );
+
+        let first_stream = StreamId::current();
+        let second_stream = std::thread::spawn(StreamId::current).join().unwrap();
+        streams.register(
+            first_stream,
+            operation_1(),
+            UnfusedOp::new(TestOperation(Arc::clone(&counters)), first_stream),
+            &mut handles,
+        );
+        streams.register(
+            second_stream,
+            operation_1(),
+            UnfusedOp::new(TestOperation(Arc::clone(&counters)), second_stream),
+            &mut handles,
+        );
+
+        let sentinel = TestOptimization {
+            counters: Arc::clone(&counters),
+            len: 1,
+        };
+        streams.optimizations.add(ExecutionPlan {
+            operations: vec![operation_2()],
+            triggers: Vec::new(),
+            optimization: BlockOptimization::new(
+                ExecutionStrategy::Optimization {
+                    opt: sentinel,
+                    ordering: Arc::new(vec![0]),
+                    score: 1,
+                },
+                vec![0],
+            ),
+        });
+
+        assert_eq!(counters.executions.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.handle_drops.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.optimization_drops.load(Ordering::SeqCst), 0);
+
+        streams.shutdown(&mut handles);
+        core::mem::drop(handles);
+
+        assert_eq!(counters.executions.load(Ordering::SeqCst), 2);
+        assert!(counters.fuser_drops.load(Ordering::SeqCst) > 0);
+        assert_eq!(counters.handle_drops.load(Ordering::SeqCst), 2);
+        assert_eq!(counters.optimization_drops.load(Ordering::SeqCst), 1);
+
+        let mut server = FusionServer::<TestRuntime>::new(
+            TestDevice,
+            FusionUtilities {
+                initialized_comms: RwLock::new(HashSet::new()),
+            },
+        );
+        server.handles.register_handle(
+            burn_ir::TensorId::new(52),
+            TestHandle(Arc::clone(&counters)),
+        );
+        server.shutdown();
+
+        assert_eq!(counters.handle_drops.load(Ordering::SeqCst), 3);
+    }
 }
 
 pub(crate) struct Stream<R: FusionRuntime> {
